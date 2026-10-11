@@ -1,5 +1,7 @@
 # Orbit CRM
 
+For the live server, follow [Ubuntu Docker deployment](DEPLOYMENT.md).
+
 React frontend, Node.js/Express API, and PostgreSQL database. The application runs locally; it is not a cloud deployment.
 
 ## Open the application

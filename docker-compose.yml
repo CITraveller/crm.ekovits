@@ -1,0 +1,100 @@
+name: ekovits_crm
+
+x-backend: &backend
+  image: ekovits-crm-backend:local
+  build:
+    context: .
+    dockerfile: deploy/backend.Dockerfile
+
+services:
+  crm_db:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm_owner
+      POSTGRES_PASSWORD: ${CRM_DB_PASSWORD:?Run bash deploy/configure.sh first}
+      POSTGRES_DB: crm_module
+      TZ: Asia/Kolkata
+    volumes:
+      - crm_postgres:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U crm_owner -d crm_module"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [crm]
+
+  crm_migrate:
+    <<: *backend
+    restart: "no"
+    command: [node, deploy/migrate.js]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://crm_owner:${CRM_DB_PASSWORD:?Set CRM_DB_PASSWORD}@crm_db:5432/crm_module
+      CRM_APP_PASSWORD: ${CRM_APP_PASSWORD:?Set CRM_APP_PASSWORD}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+    depends_on:
+      crm_db:
+        condition: service_healthy
+    networks: [crm]
+
+  crm_backend:
+    <<: *backend
+    restart: unless-stopped
+    init: true
+    command: [node, server/index.js]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4310"
+      TRUST_PROXY_HOPS: "1"
+      APP_ORIGIN: https://crm.ekovits.com
+      DATABASE_URL: postgresql://crm_app:${CRM_APP_PASSWORD:?Set CRM_APP_PASSWORD}@crm_db:5432/crm_module
+      TZ: Asia/Kolkata
+    ports:
+      - "127.0.0.1:${CRM_BACKEND_PORT:-5006}:4310"
+    depends_on:
+      crm_db:
+        condition: service_healthy
+      crm_migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4310/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    security_opt: [no-new-privileges:true]
+    networks: [crm]
+
+  crm_frontend:
+    image: ekovits-crm-frontend:local
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CRM_FRONTEND_PORT:-3006}:80"
+    depends_on:
+      crm_backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [crm]
+
+volumes:
+  crm_postgres:
+networks:
+  crm:
+    driver: bridge

@@ -16,6 +16,7 @@ import {
 import { schemas, envelope, userSchema, settingsSchema } from "./validation.js";
 export const app = express();
 app.disable("x-powered-by");
+if (process.env.TRUST_PROXY_HOPS === "1") app.set("trust proxy", 1);
 app.use(
   helmet({
     contentSecurityPolicy: {

@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.local
+.env
+.env.*
+*.log
+*.pem
+*.key
+*.pfx
+*.p12
+*.sql.gz
+*.dump
+*.backup
+backups
+test-results
+integration-work
