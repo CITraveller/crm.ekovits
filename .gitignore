@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.local/
+*.log
+test-results/
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.pfx
+*.p12
+backups/
+*.dump
+*.backup
