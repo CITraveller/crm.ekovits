@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Mail, LockKeyhole, Eye, EyeOff, ShieldCheck, Globe, ArrowRight,
   LayoutDashboard,
   Users,
   Building2,
@@ -178,7 +179,7 @@ function App() {
     [view, setView] = useState(location.hash.slice(1) || "dashboard"),
     [users, setUsers] = useState([]),
     [settings, setSettings] = useState({
-      company_name: "Orbit CRM",
+      company_name: "Ekovits CRM",
       lead_stages: stateOptions.leads,
     }),
     [toast, setToast] = useState(""),
@@ -251,11 +252,7 @@ function App() {
     <div className="app">
       <aside className={mobile ? "sidebar show" : "sidebar"}>
         <a className="brand" href="#dashboard">
-          <span className="brandmark">
-            <span />
-            <span />
-          </span>
-          orbit<span className="brand-crm">CRM</span>
+          <img className="ekovits-brand" src="/ekovits-logo.png" alt="Ekovits" /><span className="brand-crm">CRM</span>
         </a>
         <button className="workspace" onClick={() => go("dashboard")}>
           <span className="workspace-logo">
@@ -457,79 +454,58 @@ function App() {
   );
 }
 function Login({ onLogin }) {
-  const [email, setEmail] = useState("admin@crm.local"),
+  const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [showPassword, setShowPassword] = useState(false),
+    [showHelp, setShowHelp] = useState(false);
   return (
-    <div className="login">
-      <section className="login-intro">
-        <span className="eyebrow">ORBIT / CRM</span>
-        <h1>
-          A clear view.
-          <br />A closer connection.
-        </h1>
-        <p>
-          Your leads, customers, and next steps.
-          <br />
-          One shared sales workspace.
-        </p>
-        <div className="login-stages">
-          <span>New</span>
-          <i />
-          <span>Contacted</span>
-          <i />
-          <span>Converted</span>
-        </div>
-      </section>
-      <form
-        className="login-form"
-        onSubmit={async (e) => {
+    <main className="ek-login">
+      <div className="ek-dots ek-dots-top" aria-hidden="true" />
+      <div className="ek-dots ek-dots-bottom" aria-hidden="true" />
+      <div className="ek-login-layout">
+        <form className="ek-login-card" onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
           setError("");
           try {
-            onLogin(
-              await api("/auth/login", {
-                method: "POST",
-                body: { email, password },
-              }),
-            );
-          } catch (e) {
-            setError(e.message);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <span className="eyebrow">WELCOME BACK</span>
-        <h2>Sign in to your workspace</h2>
-        <p>Use your team account to continue.</p>
-        {error && <div className="error">{error}</div>}
-        <Field label="Email address">
-          <input
-            type="email"
-            required
-            value={email}
-            autoComplete="username"
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </Field>
-        <Field label="Password">
-          <input
-            type="password"
-            required
-            value={password}
-            autoComplete="current-password"
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </Field>
-        <button className="primary" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-        <small>Account access is managed by your administrator.</small>
-      </form>
-    </div>
+            onLogin(await api("/auth/login", { method: "POST", body: { email: email.trim(), password } }));
+          } catch (e) { setError(e.message); }
+          finally { setBusy(false); }
+        }}>
+          <img className="ek-login-logo" src="/ekovits-logo.png" alt="Ekovits" />
+          <h1>Welcome Back</h1>
+          <p className="ek-login-subtitle">Sign in to access your account</p>
+          {error && <div className="error" role="alert">{error}</div>}
+          <label className="ek-login-field" htmlFor="login-email">Email Address</label>
+          <div className="ek-input-wrap">
+            <Mail size={19} aria-hidden="true" />
+            <input id="login-email" type="email" required value={email} autoComplete="username" placeholder="support@ekovits.com" onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <label className="ek-login-field" htmlFor="login-password">Password</label>
+          <div className="ek-input-wrap">
+            <LockKeyhole size={19} aria-hidden="true" />
+            <input id="login-password" type={showPassword ? "text" : "password"} required value={password} autoComplete="current-password" placeholder="Enter your password" onChange={(e) => setPassword(e.target.value)} />
+            <button className="ek-password-toggle" type="button" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword(!showPassword)}>{showPassword ? <EyeOff size={19} /> : <Eye size={19} />}</button>
+          </div>
+          <button className="ek-forgot" type="button" aria-expanded={showHelp} aria-controls="login-help" onClick={() => setShowHelp(!showHelp)}>Forgot password?</button>
+          {showHelp && <p id="login-help" className="ek-login-help" role="status">Contact your CRM administrator to reset your password. Account access is managed by your administrator.</p>}
+          <button className="ek-sign-in" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign In"}<ArrowRight size={19} aria-hidden="true" /></button>
+          <div className="ek-divider"><span>or</span></div>
+          <div className="ek-secure"><ShieldCheck size={20} aria-hidden="true" />Secure Access</div>
+          <p className="ek-authorized">Only authorized personnel can access this CRM</p>
+        </form>
+        <section className="ek-company" aria-label="About Ekovits CRM">
+          <h2>EKOVITS CONSULTING LLP</h2>
+          <p className="ek-company-description">Lead, Customer &amp; Sales Opportunity<br className="ek-desktop-break" /> Management CRM.</p>
+          <div className="ek-contact"><a href="https://www.ekovits.com" target="_blank" rel="noreferrer"><Globe size={20} />www.ekovits.com</a><span aria-hidden="true" /><a href="mailto:hello@ekovits.com"><Mail size={20} />hello@ekovits.com</a></div>
+          <div className="ek-features">{[[Users, "Lead", "Management"], [Building2, "Customer", "Accounts"], [BriefcaseBusiness, "Sales", "Opportunities"], [CalendarCheck, "Activity", "Tracking"]].map(([Icon, line1, line2]) => <div className="ek-feature" key={line1}><div><Icon size={32} strokeWidth={2} aria-hidden="true" /></div><span>{line1}<br />{line2}</span></div>)}</div>
+          <div className="ek-values"><span>PEOPLE&nbsp; | &nbsp;PROCESS&nbsp; | &nbsp;PROGRESS</span></div>
+          <p className="ek-tagline">Building<br /><span>A Smarter Tomorrow</span></p>
+        </section>
+      </div>
+    </main>
   );
 }
 function Dashboard({ revision, open, create, writable }) {

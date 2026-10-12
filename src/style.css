@@ -1442,3 +1442,45 @@ dialog.expanded {
   padding-top: 20px;
   margin-top: 22px;
 }
+
+/* Ekovits sign-in */
+.ekovits-brand { width: 155px; height: 48px; object-fit: contain; }
+.ek-login { min-height: 100svh; position: relative; overflow: hidden; background: radial-gradient(ellipse at 8% 8%, #f8eafa 0, transparent 37%), radial-gradient(ellipse at 75% 105%, #f4e5fa 0, transparent 30%), #fff; color: #111827; padding: 48px 36px 72px; }
+.ek-login::before, .ek-login::after { content: ""; position: absolute; pointer-events: none; width: 570px; height: 480px; border-radius: 50%; background: linear-gradient(112deg, #cc23ad 0 43%, #f5e4fa 44%); }
+.ek-login::before { top: -265px; left: -230px; transform: rotate(1deg); }
+.ek-login::after { width: 420px; height: 440px; bottom: -160px; right: -270px; background: linear-gradient(150deg, #faf4fe 0 56%, #e965ce 57%); }
+.ek-dots { position: absolute; width: 96px; height: 110px; background-image: radial-gradient(#cf9be8 1.5px, transparent 1.5px); background-size: 20px 20px; }
+.ek-dots-top { top: 20px; right: 2px; }.ek-dots-bottom { bottom: 42px; left: -22px; }
+.ek-login-layout { position: relative; z-index: 1; max-width: 1212px; margin: 0 auto; display: grid; grid-template-columns: 500px 1fr; gap: 134px; align-items: center; }
+.ek-login-card { padding: 54px 42px 36px; border: 1px solid #e9ddf7; border-radius: 20px; background: #ffffffdb; box-shadow: 30px 12px 55px -25px #34225212; }
+.ek-login-logo { display: block; width: 268px; height: 92px; object-fit: contain; margin: 0 auto 22px; }
+.ek-login-card h1 { font-size: 32px; font-weight: 750; text-align: center; letter-spacing: -.7px; margin: 0 0 1px; }
+.ek-login-subtitle { font-size: 18px; color: #69768e; text-align: center; margin: 0 0 28px; }
+.ek-login-field { display: block; font-size: 14px; font-weight: 700; margin: 18px 0 10px; }
+.ek-input-wrap { display: flex; align-items: center; height: 50px; border: 1px solid #d4dcf0; border-radius: 10px; padding: 0 16px; gap: 12px; color: #586b8b; background: white; }
+.ek-input-wrap:focus-within { border-color: #9e08bb; box-shadow: 0 0 0 3px #9e08bb14; }
+.ek-input-wrap input { width: 100%; height: 100%; border: 0; outline: none; padding: 0; color: #152039; background: transparent; font-size: 16px; }
+.ek-input-wrap input::placeholder { color: #869abb; }.ek-input-wrap > svg { flex-shrink: 0; }
+.ek-password-toggle { padding: 6px; margin-right: -6px; border: 0; background: transparent; color: #586b8b; }
+.ek-forgot { display: block; margin: 23px 0 0 auto; border: 0; background: transparent; padding: 6px 0; color: #9500cf; font-weight: 700; }
+.ek-login-help { margin: 12px 0 0; font-size: 13px; color: #63708b; }
+.ek-sign-in { margin-top: 32px; width: 100%; min-height: 56px; border: 0; border-radius: 8px; background: linear-gradient(105deg, #920baa, #d0006c); color: #fff; font-size: 18px; font-weight: 750; }
+.ek-sign-in:hover { background: linear-gradient(105deg, #80069b, #b70060); }
+.ek-divider { display: flex; align-items: center; gap: 22px; color: #71819d; font-size: 14px; margin: 37px 0 26px; }
+.ek-divider::before, .ek-divider::after { content: ""; height: 1px; background: #dde3ef; flex: 1; }
+.ek-secure { display: flex; align-items: center; justify-content: center; gap: 12px; color: #293b5b; font-size: 14px; font-weight: 700; }
+.ek-authorized { text-align: center; margin: 18px 0 0; color: #677996; font-size: 14px; }
+.ek-company h2 { font-size: 29px; font-weight: 800; letter-spacing: 4px; line-height: 1.25; white-space: nowrap; }
+.ek-company-description { font-size: 23px; line-height: 1.35; letter-spacing: .6px; color: #5d6d89; margin: 0 0 34px; }
+.ek-contact { display: flex; align-items: center; gap: 26px; margin-bottom: 42px; }
+.ek-contact a { display: inline-flex; align-items: center; gap: 12px; font-size: 16px; color: #142a50; white-space: nowrap; }.ek-contact svg { color: #9e06cc; }
+.ek-contact > span { height: 25px; width: 1px; background: #d7deec; }
+.ek-features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 30px; }
+.ek-feature { text-align: center; font-size: 15px; line-height: 1.3; font-weight: 600; }.ek-feature > div { display: grid; place-items: center; width: 64px; height: 64px; border: 1px solid #eeddff; border-radius: 15px; background: linear-gradient(#faf4ff, #f4eafb); color: #940ac6; margin: 0 auto 12px; }
+.ek-values { display: flex; align-items: center; gap: 16px; margin-top: 44px; color: #8799b6; font-size: 13px; letter-spacing: 4px; font-weight: 800; white-space: nowrap; }.ek-values::before, .ek-values::after { content: ""; flex: 1; height: 1px; background: #dce2ee; }
+.ek-tagline { font-family: "Segoe Script", "Brush Script MT", cursive; font-size: 26px; font-weight: 700; font-style: italic; color: #a000b5; line-height: 1.3; width: max-content; margin: 72px auto 0; transform: rotate(-7deg); }.ek-tagline span { padding-left: 5px; }
+.ek-login button:focus-visible, .ek-login a:focus-visible { outline: 3px solid #b355d7; outline-offset: 4px; }
+@media (min-height: 950px) { .ek-login { display: grid; align-items: center; }.ek-login-layout { width: 100%; } }
+@media (max-width: 1250px) { .ek-login-layout { grid-template-columns: minmax(360px, 460px) 1fr; gap: 55px; }.ek-company h2 { font-size: 24px; letter-spacing: 2px; white-space: normal; }.ek-company-description { font-size: 20px; }.ek-contact { gap: 14px; flex-wrap: wrap; }.ek-features { gap: 14px; }.ek-values { letter-spacing: 2px; } }
+@media (max-width: 950px) { .ek-login { padding: 36px 22px; }.ek-login-layout { grid-template-columns: minmax(0, 500px); justify-content: center; gap: 50px; }.ek-company { text-align: center; padding: 0 0 28px; }.ek-contact { justify-content: center; }.ek-tagline { margin-top: 38px; } }
+@media (max-width: 480px) { .ek-login { padding: 22px 16px; }.ek-login-card { padding: 28px 22px; }.ek-login-logo { width: 235px; max-width: 100%; margin-bottom: 16px; }.ek-login-card h1 { font-size: 28px; }.ek-login-subtitle { font-size: 16px; }.ek-features { grid-template-columns: repeat(2, 1fr); gap: 26px; }.ek-contact { flex-direction: column; gap: 16px; }.ek-contact > span { display: none; }.ek-company h2 { font-size: 21px; }.ek-values { font-size: 10px; letter-spacing: 2px; gap: 8px; }.ek-company-description { margin-top: 8px; font-size: 18px; }.ek-desktop-break { display: none; } }
