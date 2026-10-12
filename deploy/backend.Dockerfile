@@ -1,4 +1,7 @@
 FROM node:24-bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-openpyxl \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

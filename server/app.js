@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import express from "express";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
@@ -348,14 +349,53 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
 });
 app.post("/api/leads/import", upload.single("file"), async (req, res) => {
-  if (!req.file || !req.file.originalname.endsWith(".xlsx"))
-    throw fail(400, "Choose an .xlsx workbook (maximum 5 MB)");
-  const book = new ExcelJS.Workbook();
+  if (
+    !req.file ||
+    !/\.(xlsx|xlsm)$/i.test(req.file.originalname.trim())
+  ) {
+    throw fail(400, "Choose an .xlsx or .xlsm workbook (maximum 5 MB)");
+  }
+
   try {
     validateWorkbookArchive(req.file.buffer);
+  } catch (e) {
+    throw fail(400, e.message || "Invalid Excel archive");
+  }
+
+  let book = new ExcelJS.Workbook();
+
+  try {
     await book.xlsx.load(req.file.buffer);
-  } catch {
-    throw fail(400, "The Excel workbook could not be read");
+  } catch (primaryError) {
+    const converted = spawnSync(
+      "python3",
+      ["server/excel-compat.py"],
+      {
+        input: req.file.buffer,
+        timeout: 15000,
+        maxBuffer: 12 * 1024 * 1024
+      }
+    );
+
+    if (converted.error || converted.status !== 0) {
+      console.error("ExcelJS import error:", primaryError.message);
+      console.error("Compatibility error:",
+        converted.stderr?.toString().slice(0, 1000));
+
+      throw fail(
+        400,
+        "Excel format could not be processed. Please upload a valid, unprotected Excel workbook."
+      );
+    }
+
+    try {
+      validateWorkbookArchive(converted.stdout);
+      book = new ExcelJS.Workbook();
+      await book.xlsx.load(converted.stdout);
+    } catch (e) {
+      console.error("Normalized workbook error:", e.message);
+      throw fail(400, "Excel workbook normalization failed");
+    }
   }
   const sheet = book.worksheets[0];
   if (!sheet || sheet.rowCount > 10001)
