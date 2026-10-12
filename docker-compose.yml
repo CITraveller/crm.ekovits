@@ -49,6 +49,9 @@ services:
       HOST: 0.0.0.0
       PORT: "4310"
       TRUST_PROXY_HOPS: "1"
+      PORTAL_SYNC_ENABLED: ${PORTAL_SYNC_ENABLED:-false}
+      PORTAL_SYNC_URL: ${PORTAL_SYNC_URL:-https://portal.ekovits.com/api/integrations/crm/customers}
+      PORTAL_SYNC_TOKEN: ${PORTAL_SYNC_TOKEN:-}
       APP_ORIGIN: https://crm.ekovits.com
       DATABASE_URL: postgresql://crm_app:${CRM_APP_PASSWORD:?Set CRM_APP_PASSWORD}@crm_db:5432/crm_module
       TZ: Asia/Kolkata

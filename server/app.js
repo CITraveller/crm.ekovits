@@ -1,3 +1,4 @@
+import { registerPortalSyncRoutes } from "./portal-sync.js";
 import { spawnSync } from "node:child_process";
 import express from "express";
 import helmet from "helmet";
@@ -135,6 +136,7 @@ const admin = (req, res, next) =>
   req.user.role === "Admin"
     ? next()
     : next(fail(403, "Administrator access required"));
+registerPortalSyncRoutes(app, admin);
 app.get("/api/users", async (req, res) =>
   res.json(
     (

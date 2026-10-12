@@ -1,3 +1,4 @@
+import PortalSync from "./PortalSync.jsx";
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -247,6 +248,7 @@ function App() {
     ["deals", "Opportunities", BriefcaseBusiness],
     ["activities", "Activities", CalendarCheck],
     ["reports", "Reports", BarChart3],
+    ...(user.role === "Admin" ? [["portal-sync", "Portal sync", Building2]] : []),
   ];
   return (
     <div className="app">
@@ -399,6 +401,8 @@ function App() {
               create={() => setModal({ type: "form", entity: view })}
               notify={notify}
             />
+          ) : view === "portal-sync" && user.role === "Admin" ? (
+            <PortalSync api={api} />
           ) : view === "reports" ? (
             <Reports revision={revision} />
           ) : view === "team" && user.role === "Admin" ? (
