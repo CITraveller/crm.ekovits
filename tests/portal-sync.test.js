@@ -8,36 +8,38 @@ import pg from "pg";
 import express from "express";
 import "dotenv/config";
 
-test("CRM to Portal durable customer delivery", async (t) => {
+test("two-way customer sync with latest edit wins", async (t) => {
   const prefix = "sync_test_" + randomUUID().replaceAll("-", "");
-  const admin = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-  const original = process.env.DATABASE_URL;
+  const original = process.env.DATABASE_URL,
+    admin = new pg.Pool({ connectionString: original });
   const url = new URL(original);
   url.searchParams.set("options", `-c search_path=${prefix}_crm`);
   process.env.DATABASE_URL = url.toString();
-  const { pool, transaction } = await import("../server/db.js");
-  const { sendNextCustomer } = await import("../server/portal-sync.js");
+  const { pool, transaction, tokenHash } = await import("../server/db.js");
+  const { sendNextCustomer, pullPortalPage, importPortalCustomer } =
+    await import("../server/portal-sync.js");
   url.searchParams.set("options", `-c search_path=${prefix}_portal`);
   const portal = new pg.Pool({ connectionString: url.toString() });
   const scratch = path.resolve(".local", prefix);
   let http;
   try {
     await admin.query(
-      `CREATE SCHEMA ${prefix}_crm; CREATE SCHEMA ${prefix}_portal`,
+      `CREATE SCHEMA ${prefix}_crm;CREATE SCHEMA ${prefix}_portal`,
     );
-    await pool.query(await fs.readFile("server/schema.sql", "utf8"));
+    const schema = await fs.readFile("server/schema.sql", "utf8");
+    await pool.query(schema);
     await portal.query(
       await fs.readFile("tests/fixtures/portal/db/schema.sql", "utf8"),
     );
     await portal.query(
       await fs.readFile(
-        "tests/fixtures/portal/db/migrations/202609160002_crm_customer_fields.sql",
+        "deploy/portal-integration/202610120001_crm_sync.sql",
         "utf8",
       ),
     );
     await portal.query(
       await fs.readFile(
-        "deploy/portal-integration/202610120001_crm_sync.sql",
+        "deploy/portal-integration/202610120002_customer_sync_bidirectional.sql",
         "utf8",
       ),
     );
@@ -50,13 +52,13 @@ test("CRM to Portal durable customer delivery", async (t) => {
     const receiver = await import(
       pathToFileURL(path.join(scratch, "routes/crmIntegration.js"))
     );
-    const portalTransaction = async (fn) => {
+    const transact = async (fn) => {
       const c = await portal.connect();
       try {
         await c.query("BEGIN");
-        const out = await fn(c);
+        const value = await fn(c);
         await c.query("COMMIT");
-        return out;
+        return value;
       } catch (e) {
         await c.query("ROLLBACK");
         throw e;
@@ -64,14 +66,22 @@ test("CRM to Portal durable customer delivery", async (t) => {
         c.release();
       }
     };
-    const receive = (body) => receiver.receiveCustomer(body, portalTransaction);
     process.env.CRM_SYNC_TOKEN = "a".repeat(64);
     const app = express();
     app.use(express.json());
     app.use(receiver.authorizeCrm);
+    app.get("/", async (req, res, next) => {
+      try {
+        res.json(
+          await receiver.listSyncCustomers(req.query.after || "", portal),
+        );
+      } catch (e) {
+        next(e);
+      }
+    });
     app.post("/", async (req, res, next) => {
       try {
-        res.json(await receive(req.body));
+        res.json(await receiver.receiveCustomer(req.body, transact));
       } catch (e) {
         next(e);
       }
@@ -86,226 +96,307 @@ test("CRM to Portal durable customer delivery", async (t) => {
       url: `http://127.0.0.1:${http.address().port}/`,
       token: process.env.CRM_SYNC_TOKEN,
     };
-    const id = randomUUID(),
-      lead = randomUUID();
-    const customer = {
-      name: "Sync Example Ltd",
-      status: "Active",
-      contact_email: "billing@example.test",
-      contact_name: "Example",
-      address: "Billing address",
-      gstin: "",
+    const make = async (name, status = "Active", email = "") => {
+      const id = randomUUID();
+      await pool.query("INSERT INTO customers(id,data) VALUES($1,$2)", [
+        id,
+        { name, status, contact_email: email, address: "CRM address" },
+      ]);
+      return id;
     };
+    const drain = async () => {
+      for (let i = 0; i < 30 && (await sendNextCustomer(config)); i++);
+    };
+    let id, inactiveId;
     await t.test(
-      "unconverted customers are excluded; conversion queues atomically",
+      "all manual accounts queue, including inactive; lead-only records excluded",
       async () => {
-        await pool.query("INSERT INTO customers(id,data) VALUES($1,$2)", [
-          id,
-          customer,
-        ]);
+        id = await make("Active Example", "Active", "active@example.test");
+        inactiveId = await make(
+          "Inactive Example",
+          "Inactive",
+          "inactive@example.test",
+        );
         await pool.query("INSERT INTO leads(id,data) VALUES($1,$2)", [
-          lead,
-          { name: "Example", stage: "New" },
+          randomUUID(),
+          { name: "Lead only", stage: "New" },
         ]);
         assert.equal(
           (await pool.query("SELECT * FROM portal_customer_sync")).rowCount,
-          0,
+          2,
         );
         await assert.rejects(
           transaction(async (c) => {
-            await c.query(
-              `UPDATE leads SET customer_id=$1,data=jsonb_set(data,'{stage}','"Converted"') WHERE id=$2`,
-              [id, lead],
-            );
-            throw new Error("rollback");
+            await c.query("INSERT INTO customers(id,data) VALUES($1,$2)", [
+              randomUUID(),
+              { name: "Rollback", status: "Active" },
+            ]);
+            throw Error("rollback");
           }),
         );
         assert.equal(
           (await pool.query("SELECT * FROM portal_customer_sync")).rowCount,
-          0,
-        );
-        await pool.query(
-          `UPDATE leads SET customer_id=$1,data=jsonb_set(data,'{stage}','"Converted"') WHERE id=$2`,
-          [id, lead],
-        );
-        assert.equal(
-          (await pool.query("SELECT * FROM portal_customer_sync")).rowCount,
-          1,
-        );
-      },
-    );
-    await t.test("unauthorized deliveries are rejected", async () => {
-      assert.equal(
-        (
-          await fetch(config.url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          })
-        ).status,
-        401,
-      );
-    });
-    await t.test("failed delivery remains pending then succeeds", async () => {
-      await sendNextCustomer({ ...config, token: "b".repeat(64) });
-      let row = (await pool.query("SELECT * FROM portal_customer_sync"))
-        .rows[0];
-      assert.equal(row.sent_revision, "0");
-      assert.equal(row.attempts, 1);
-      await pool.query("UPDATE portal_customer_sync SET next_attempt_at=now()");
-      assert.equal(await sendNextCustomer(config), true);
-      row = (await pool.query("SELECT * FROM portal_customer_sync")).rows[0];
-      assert.equal(row.sent_revision, row.revision);
-      assert.ok(row.portal_customer_id);
-      assert.equal((await portal.query("SELECT * FROM customers")).rowCount, 1);
-    });
-    await t.test(
-      "lost acknowledgement and repeated delivery create no duplicates",
-      async () => {
-        await pool.query(
-          "UPDATE portal_customer_sync SET sent_revision=0,next_attempt_at=now()",
-        );
-        await sendNextCustomer(config, async (url, options) => {
-          await fetch(url, options);
-          throw new Error("connection lost");
-        });
-        await pool.query(
-          "UPDATE portal_customer_sync SET next_attempt_at=now()",
-        );
-        await sendNextCustomer(config);
-        assert.equal(
-          (await portal.query("SELECT * FROM customers")).rowCount,
-          1,
-        );
-      },
-    );
-    await t.test(
-      "customer changes resync and preserve billing enrichment",
-      async () => {
-        await portal.query(`CREATE FUNCTION protect_documents() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Sync must not update existing documents'; END $$;
-        CREATE TRIGGER protect_invoices BEFORE UPDATE ON invoices FOR EACH STATEMENT EXECUTE FUNCTION protect_documents();
-        CREATE TRIGGER protect_quotes BEFORE UPDATE ON quotations FOR EACH STATEMENT EXECUTE FUNCTION protect_documents();`);
-        await portal.query(
-          "UPDATE customers SET state='Delhi',state_code='07',shipping_address='Portal shipping'",
-        );
-        await pool.query(
-          "UPDATE customers SET data=$2,version=version+1 WHERE id=$1",
-          [id, { ...customer, name: "Updated Ltd", address: "" }],
-        );
-        await Promise.all([sendNextCustomer(config), sendNextCustomer(config)]);
-        const row = (await portal.query("SELECT * FROM customers")).rows[0];
-        assert.equal(row.name, "Updated Ltd");
-        assert.equal(row.state_code, "07");
-        assert.equal(row.billing_address, "Billing address");
-        assert.equal(row.shipping_address, "Portal shipping");
-        await receive({ customerId: id, revision: "1", customer });
-        assert.equal(
-          (await portal.query("SELECT name FROM customers")).rows[0].name,
-          "Updated Ltd",
-        );
-      },
-    );
-    await t.test(
-      "existing matches require linking and bad fields are rejected",
-      async () => {
-        await assert.rejects(
-          receive({
-            customerId: randomUUID(),
-            revision: "1",
-            customer: { ...customer, name: "Updated Ltd" },
-          }),
-          (e) => e.status === 409,
-        );
-        await assert.rejects(
-          receive({
-            customerId: randomUUID(),
-            revision: "1",
-            customer: { ...customer, gstin: "bad" },
-          }),
-          (e) => e.status === 422,
-        );
-        assert.equal(
-          (await portal.query("SELECT * FROM customers")).rowCount,
-          1,
-        );
-      },
-    );
-    await t.test(
-      "explicitly linked Portal customers update instead of duplicating",
-      async () => {
-        const linkedId = randomUUID();
-        await portal.query(
-          "INSERT INTO customers(id,name,billing_address,crm_customer_id) VALUES('existing','Linked account','Portal address',$1)",
-          [linkedId],
-        );
-        const ack = await receive({
-          customerId: linkedId,
-          revision: "1",
-          customer: {
-            ...customer,
-            name: "Linked account",
-            contact_email: "different@example.test",
-          },
-        });
-        assert.equal(ack.portalCustomerId, "existing");
-        assert.equal(
-          (await portal.query("SELECT * FROM customers")).rowCount,
           2,
         );
       },
     );
     await t.test(
-      "existing conversions backfill without duplicating Portal accounts",
+      "API rejects unauthenticated callers; failed deliveries retry",
       async () => {
-        await pool.query(
-          "DELETE FROM portal_customer_sync WHERE customer_id=$1",
-          [id],
-        );
-        await pool.query(await fs.readFile("server/schema.sql", "utf8"));
+        assert.equal((await fetch(config.url)).status, 401);
+        await sendNextCustomer({ ...config, token: "b".repeat(64) });
         assert.equal(
-          (await pool.query("SELECT * FROM portal_customer_sync")).rowCount,
+          (
+            await pool.query(
+              "SELECT sum(attempts)::int AS n FROM portal_customer_sync",
+            )
+          ).rows[0].n,
           1,
         );
-        // A real worker restart reads the same persisted row. Identity remains
-        // stable even if an older revision is redelivered after restore.
-        await sendNextCustomer(config);
+        await pool.query(
+          "UPDATE portal_customer_sync SET next_attempt_at=now()",
+        );
+        await drain();
+        assert.equal(
+          (await portal.query("SELECT * FROM customers")).rowCount,
+          2,
+        );
         assert.equal(
           (
             await portal.query(
-              "SELECT * FROM customers WHERE crm_customer_id=$1",
-              [id],
+              "SELECT active FROM customers WHERE crm_customer_id=$1",
+              [inactiveId],
+            )
+          ).rows[0].active,
+          false,
+        );
+      },
+    );
+    await t.test(
+      "new inactive Portal account imports into CRM and links back",
+      async () => {
+        await portal.query(
+          "INSERT INTO customers(id,name,billing_address,email,active) VALUES('portal-new','Portal Origin','Portal address','portal@example.test',false)",
+        );
+        await pullPortalPage(config);
+        await drain();
+        const row = (
+          await portal.query("SELECT * FROM customers WHERE id='portal-new'")
+        ).rows[0];
+        assert.ok(row.crm_customer_id);
+        const local = (
+          await pool.query("SELECT * FROM customers WHERE id=$1", [
+            row.crm_customer_id,
+          ])
+        ).rows[0];
+        assert.equal(local.data.status, "Inactive");
+        assert.equal(local.data.address, "Portal address");
+      },
+    );
+    await t.test(
+      "latest Portal edit wins over pending CRM edit; invoice tables untouched",
+      async () => {
+        await portal.query(`CREATE FUNCTION protect_documents() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Sync must not update documents'; END $$;
+    CREATE TRIGGER protect_invoices BEFORE UPDATE ON invoices FOR EACH STATEMENT EXECUTE FUNCTION protect_documents();
+    CREATE TRIGGER protect_quotes BEFORE UPDATE ON quotations FOR EACH STATEMENT EXECUTE FUNCTION protect_documents();`);
+        await pool.query(
+          `UPDATE customers SET data=jsonb_set(data,'{name}','"Older CRM edit"') WHERE id=$1`,
+          [id],
+        );
+        await portal.query(
+          "UPDATE customers SET name='Newest Portal edit',active=false WHERE crm_customer_id=$1",
+          [id],
+        );
+        await drain();
+        const c = (
+          await pool.query("SELECT data FROM customers WHERE id=$1", [id])
+        ).rows[0].data;
+        assert.equal(c.name, "Newest Portal edit");
+        assert.equal(c.status, "Inactive");
+      },
+    );
+    await t.test(
+      "latest CRM edit wins and Portal-only fields remain intact",
+      async () => {
+        await portal.query(
+          "UPDATE customers SET shipping_address='Keep shipping',state='Delhi',state_code='07' WHERE crm_customer_id=$1",
+          [id],
+        );
+        await pool.query(
+          `UPDATE customers SET data=data || $2::jsonb WHERE id=$1`,
+          [
+            id,
+            {
+              name: "Newest CRM edit",
+              status: "Active",
+              contact_email: "latest@example.test",
+              email: "latest@example.test",
+            },
+          ],
+        );
+        await drain();
+        const remote = (
+          await portal.query(
+            "SELECT * FROM customers WHERE crm_customer_id=$1",
+            [id],
+          )
+        ).rows[0];
+        assert.equal(remote.name, "Newest CRM edit");
+        assert.equal(remote.active, true);
+        assert.equal(remote.shipping_address, "Keep shipping");
+        assert.equal(remote.state_code, "07");
+      },
+    );
+    await t.test(
+      "Portal edits flow back without any CRM pending change",
+      async () => {
+        await portal.query(
+          "UPDATE customers SET contact_number='12345',notes='Edited in Portal' WHERE crm_customer_id=$1",
+          [id],
+        );
+        await pullPortalPage(config);
+        const c = (
+          await pool.query("SELECT data FROM customers WHERE id=$1", [id])
+        ).rows[0].data;
+        assert.equal(c.contact_phone, "12345");
+        assert.equal(c.notes, "Edited in Portal");
+      },
+    );
+    await t.test(
+      "repeated polling and acknowledgement loss neither duplicate nor loop",
+      async () => {
+        const before = (
+          await pool.query("SELECT id,version FROM customers ORDER BY id")
+        ).rows;
+        await pullPortalPage(config);
+        await drain();
+        await pullPortalPage(config);
+        assert.deepEqual(
+          (await pool.query("SELECT id,version FROM customers ORDER BY id"))
+            .rows,
+          before,
+        );
+        await pool.query(
+          `UPDATE customers SET data=jsonb_set(data,'{notes}','"Retry test"') WHERE id=$1`,
+          [id],
+        );
+        await sendNextCustomer(config, async (u, o) => {
+          await fetch(u, o);
+          throw Error("lost response");
+        });
+        await pool.query(
+          "UPDATE portal_customer_sync SET next_attempt_at=now()",
+        );
+        await drain();
+        assert.equal(
+          (await portal.query("SELECT * FROM customers")).rowCount,
+          3,
+        );
+      },
+    );
+    await t.test(
+      "unique company+email matches link automatically",
+      async () => {
+        const matchId = await make(
+          "Existing Both",
+          "Active",
+          "both@example.test",
+        );
+        await portal.query(
+          "INSERT INTO customers(id,name,billing_address,email) VALUES('existing-both','Existing Both','Existing Portal address','both@example.test')",
+        );
+        await drain();
+        assert.equal(
+          (
+            await portal.query(
+              "SELECT crm_customer_id FROM customers WHERE id='existing-both'",
+            )
+          ).rows[0].crm_customer_id,
+          matchId,
+        );
+        assert.equal(
+          (
+            await portal.query(
+              "SELECT * FROM customers WHERE name='Existing Both'",
             )
           ).rowCount,
           1,
         );
       },
     );
-    await t.test("migration backfill is repeatable", async () => {
-      await pool.query(await fs.readFile("server/schema.sql", "utf8"));
-      assert.equal(
-        (await pool.query("SELECT * FROM portal_customer_sync")).rowCount,
-        1,
-      );
-      assert.equal(await sendNextCustomer(config), false);
-    });
-    await t.test("CRM sync status requires an administrator", async () => {
+    await t.test(
+      "ambiguous matches are flagged, not merged or duplicated",
+      async () => {
+        await make("Ambiguous Name");
+        await portal.query(
+          "INSERT INTO customers(id,name,billing_address) VALUES('ambiguous','Ambiguous Name','Existing')",
+        );
+        await drain();
+        await pullPortalPage(config);
+        assert.equal(
+          (
+            await portal.query(
+              "SELECT * FROM customers WHERE name='Ambiguous Name'",
+            )
+          ).rowCount,
+          1,
+        );
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT * FROM portal_import_conflicts WHERE portal_id='ambiguous'",
+            )
+          ).rowCount,
+          1,
+        );
+      },
+    );
+    await t.test(
+      "migration repeat and stale deliveries preserve newest values",
+      async () => {
+        const before = (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM portal_customer_sync",
+          )
+        ).rows[0].n;
+        await pool.query(schema);
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT count(*)::int AS n FROM portal_customer_sync",
+            )
+          ).rows[0].n,
+          before,
+        );
+        const ack = await receiver.receiveCustomer(
+          {
+            customerId: id,
+            revision: "1",
+            modifiedAt: "2020-01-01T00:00:00.000Z",
+            customer: { name: "Stale", status: "Inactive" },
+          },
+          transact,
+        );
+        assert.equal(ack.record.name, "Newest CRM edit");
+      },
+    );
+    await t.test("sync status and retry are administrator-only", async () => {
       const { app: crmApp } = await import("../server/app.js");
       const s = crmApp.listen(0, "127.0.0.1");
       await new Promise((r) => s.once("listening", r));
       try {
         const endpoint = `http://127.0.0.1:${s.address().port}/api/integrations/portal`;
         assert.equal((await fetch(endpoint)).status, 401);
-        const { tokenHash } = await import("../server/db.js");
         for (const role of ["Viewer", "Sales Manager", "Admin"]) {
-          const user = randomUUID(),
+          const uid = randomUUID(),
             token = randomUUID();
           await pool.query(
             "INSERT INTO users(id,name,email,password_hash,role) VALUES($1,$2,$3,$4,$5)",
-            [user, role, role + "@example.test", "unused", role],
+            [uid, role, role + "@example.test", "unused", role],
           );
           await pool.query(
             "INSERT INTO sessions VALUES($1,$2,now()+interval '1 hour')",
-            [tokenHash(token), user],
+            [tokenHash(token), uid],
           );
           const headers = {
             cookie: `crm_session=${token}`,
@@ -325,12 +416,71 @@ test("CRM to Portal durable customer delivery", async (t) => {
         await new Promise((r) => s.close(r));
       }
     });
+    await t.test(
+      "cleared shared fields and Portal reactivation propagate",
+      async () => {
+        await pool.query(
+          "UPDATE customers SET data=data || $2::jsonb WHERE id=$1",
+          [id, { address: "", notes: "" }],
+        );
+        await drain();
+        assert.equal(
+          (
+            await portal.query(
+              "SELECT billing_address FROM customers WHERE crm_customer_id=$1",
+              [id],
+            )
+          ).rows[0].billing_address,
+          "",
+        );
+        await portal.query(
+          "UPDATE customers SET active=false WHERE crm_customer_id=$1",
+          [id],
+        );
+        await pullPortalPage(config);
+        assert.equal(
+          (await pool.query("SELECT data FROM customers WHERE id=$1", [id]))
+            .rows[0].data.status,
+          "Inactive",
+        );
+        await portal.query(
+          "UPDATE customers SET active=true WHERE crm_customer_id=$1",
+          [id],
+        );
+        await pullPortalPage(config);
+        assert.equal(
+          (await pool.query("SELECT data FROM customers WHERE id=$1", [id]))
+            .rows[0].data.status,
+          "Active",
+        );
+      },
+    );
+    await t.test(
+      "pagination imports accounts beyond the first 100, including inactive",
+      async () => {
+        await portal.query(
+          "INSERT INTO customers(id,name,billing_address,email,active) SELECT 'page-'||i,'Page Account '||i,'Address','page'||i||'@example.test',false FROM generate_series(1,102) i",
+        );
+        let cursor = await pullPortalPage(config);
+        assert.ok(cursor);
+        cursor = await pullPortalPage(config, cursor);
+        assert.equal(cursor, "");
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT * FROM customers WHERE data->>'name' LIKE 'Page Account %' AND data->>'status'='Inactive'",
+            )
+          ).rowCount,
+          102,
+        );
+      },
+    );
   } finally {
     if (http) await new Promise((r) => http.close(r));
     await pool.end();
     await portal.end();
     await admin.query(
-      `DROP SCHEMA IF EXISTS ${prefix}_crm CASCADE; DROP SCHEMA IF EXISTS ${prefix}_portal CASCADE`,
+      `DROP SCHEMA IF EXISTS ${prefix}_crm CASCADE;DROP SCHEMA IF EXISTS ${prefix}_portal CASCADE`,
     );
     await admin.end();
     process.env.DATABASE_URL = original;

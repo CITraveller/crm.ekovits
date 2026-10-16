@@ -1,90 +1,106 @@
-# Converted customer sync: CRM → Portal
+# Two-way CRM ↔ Portal customer sync (protocol 2)
 
-Only customer accounts linked to a Converted CRM lead are synced. Unconverted
-leads and manually created accounts without a converted lead are excluded.
-Existing converted accounts are queued during migration. Future conversion and
-customer edits enqueue in the same database transaction as the CRM change.
+All customer accounts, active and inactive, sync in both directions. This
+includes manually created accounts, existing Portal accounts and converted CRM
+leads. Unconverted leads are not customer accounts and are not copied.
 
-The backend attempts delivery every five seconds. Failures retry with a delay
-from 15 seconds up to one hour, indefinitely. The queue survives restarts.
-Admin users can open **Portal sync** in CRM to view status and retry pending
-deliveries. The list shows up to 500 accounts with pending accounts first;
-summary counts cover all accounts. The worker processes ten accounts per tick.
+The most recent edit to the shared account details wins, using database-generated
+timestamps. This is account-level conflict resolution: the latest shared snapshot
+wins, rather than combining individual fields from conflicting edits. Empty
+values also sync, so clearing a shared field clears it on the other side. Portal
+wins an exact timestamp tie. Keep both server database clocks synchronized.
 
-Portal accepts a dedicated 256-bit integration key on
-`POST /api/integrations/crm/customers`. The key is stored only in server `.env`
-files. The CRM endpoint is fixed to Portal HTTPS; redirects are rejected. No
-database port is opened and neither app uses the other app's database password.
-Do not place browser challenges on this API route in Cloudflare.
+Shared fields: customer name, billing address, primary contact name, designation,
+primary email, primary phone, alternate phone, GSTIN, notes, and active/inactive
+status. CRM's Prospect and On Hold statuses map to active in Portal. CRM-specific
+lead assignments, website, industry and sales records stay in CRM. Portal-specific
+state/state code, shipping address, PAN, country, PIN code, legal name and additional
+contacts stay in Portal. Fill missing billing/tax details before issuing documents.
 
-## Data and ownership
+The integration never rewrites existing invoices or quotations, and never
+automatically creates them. Permanent deletions do not propagate; use Inactive
+to retain linked accounts. The normal Portal editing workflow remains unchanged.
 
-- Each Portal customer retains its own ID, with a unique CRM UUID mapping.
-- Revision checks make repeated and out-of-order deliveries idempotent.
-- CRM owns name, primary contact, address, email, phone, GSTIN, designation,
-  alternate phone, notes and active status for linked accounts. Nonempty CRM
-  values update those fields. Empty CRM fields preserve existing Portal values.
-  Clear a value directly in Portal if required; automatic clearing is not supported.
-- Portal-only shipping address, state/state code, PAN, country, PIN code, legal
-  name and additional contacts stay in Portal. The API does not create fabricated
-  billing/tax details. Complete missing details in Portal before issuing documents.
-- Inactive CRM accounts become inactive Portal customers. On Hold remains active.
-- Existing invoices and quotations are never updated by this integration.
-- This is one-way customer sync. Portal edits do not flow back into CRM. No
-  invoice or quote is automatically created.
-- Existing Portal name/email/GSTIN matches return a conflict for explicit linking,
-  rather than automatically merging potentially unrelated customers.
-- Conversion shows success once saved in CRM; **Synced** confirms Portal delivery.
+## Delivery and identity
 
-## First deployment (run on Ubuntu)
+CRM saves a durable outgoing snapshot with each customer write. The worker pushes
+up to ten pending records and reads a page of up to 100 Portal accounts every five
+seconds. It scans all Portal accounts repeatedly, including inactive ones, so
+changes are eventually found even across outages. An initial import may take
+multiple cycles. Received changes retain their original modification time and do
+not generate echo changes. Pending sends survive restarts; scan pagination restarts
+from the beginning after a worker restart.
 
-1. Pull the CRM release and find Portal's actual directory:
+Each account has a stable CRM UUID and Portal ID mapping. Existing accounts link
+automatically only when there is a unique exact GSTIN match, or a unique exact
+company-name-and-email match, with no conflicting GSTIN or existing link.
+Ambiguous/name-only matches are flagged for explicit linking instead of creating
+duplicates. This matching policy cannot establish identity for incomplete records;
+review flagged accounts in CRM's **Portal sync** screen.
+
+The Admin-only screen shows outgoing status, last Portal check, incoming errors
+and accounts requiring linking. It shows up to 500 outgoing rows and 100 import
+conflicts; summary outgoing counts cover all accounts. Retry pending retries sends;
+incoming polling continues automatically. Invalid records do not block other imports.
+
+The API uses the existing shared integration key over HTTPS. It opens no database
+ports and gives neither application access to the other's database credentials.
+Cloudflare must allow this authenticated API route without browser challenges.
+
+## Upgrade the installed one-way integration
+
+Run on Ubuntu, one stage at a time. Stop on errors. The existing one-way
+integration must already be installed, with CRM sync still disabled. If it was
+enabled, first set `PORTAL_SYNC_ENABLED=false` in CRM's `.env` and recreate only
+the CRM backend before applying the upgrade. Never paste `.env` contents.
+
+Pull and take fresh backups:
 
 ```bash
-cd ~/crm.ekovits.com
-git pull --ff-only origin main
-PORTAL_DIR="$(docker inspect portal_backend --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}')"
-printf 'Portal folder: %s\n' "$PORTAL_DIR"
-test -f "$PORTAL_DIR/server/server.js"
+cd ~/crm.ekovits.com &&
+git pull --ff-only origin main &&
+BACKUP_DIR="$HOME/backups/crm-portal-v2-$(date +%Y%m%d_%H%M%S)" &&
+mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR" &&
+docker exec portal_db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$BACKUP_DIR/portal.dump" &&
+docker compose exec -T crm_db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$BACKUP_DIR/crm.dump" &&
+python3 deploy/portal-integration/upgrade.py "$HOME/Portal.ekovits.com"
 ```
 
-Stop if a command fails. Take database backups before migration:
+The upgrade checks the reviewed v1 route hash, confirms existing keys match and
+sync is disabled, saves a backup, then replaces only the integration route and adds
+a migration. It preserves credentials, other Portal source and the compose project.
+It refuses unknown or already-upgraded versions. Containers are not restarted.
+
+Rebuild Portal with the exact existing project name:
 
 ```bash
-BACKUP_DIR="$HOME/backups/crm-portal-sync-$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-chmod 700 "$BACKUP_DIR"
-docker exec portal_db pg_dump -U portal_app -d ekovits_invoice -Fc > "$BACKUP_DIR/portal.dump" &&
-docker compose exec -T crm_db pg_dump -U crm_owner -d crm_module -Fc > "$BACKUP_DIR/crm.dump"
+cd ~/Portal.ekovits.com &&
+docker compose -p portalekovitscom config --quiet &&
+docker compose -p portalekovitscom up -d --build --no-deps portal_backend
 ```
 
-Stop if either backup fails. The installer verifies the exact four Portal source
-hashes reviewed against the running container. It refuses unknown or already
-patched sources. It backs up source, compose and both `.env` files into a private
-folder under `~/backups`, generates the shared key, and leaves CRM sync disabled.
-It does not touch or restart any containers.
+Check the authenticated API from inside Portal without printing any credentials
+or customer details (run after Portal startup completes):
 
 ```bash
-python3 deploy/portal-integration/install.py "$PORTAL_DIR"
-docker compose -f "$PORTAL_DIR/docker-compose.yml" --project-directory "$PORTAL_DIR" config --quiet
-docker compose -f "$PORTAL_DIR/docker-compose.yml" --project-directory "$PORTAL_DIR" up -d --build --no-deps portal_backend
-```
-
-Check Portal before continuing (give startup migrations time to finish):
-
-```bash
+docker exec portal_backend node --input-type=module -e '
+const r = await fetch("http://127.0.0.1:5000/api/integrations/crm/customers", {
+  headers: { Authorization: "Bearer " + process.env.CRM_SYNC_TOKEN }
+});
+if (!r.ok) { console.error("HTTP", r.status); process.exit(1); }
+const body = await r.json();
+console.log("Sync protocol:", body.protocol);
+console.log("Accounts in first page:", body.rows?.length);
+if (body.protocol !== 2) process.exit(1);
+'
 curl -fsS https://portal.ekovits.com/api/health
-curl -sS -o /dev/null -w 'Integration HTTP: %{http_code}\n' -X POST https://portal.ekovits.com/api/integrations/crm/customers
 ```
 
-Health should succeed; the unauthenticated integration request should return
-**401**. 404 means the patch is not running; 503 means the key is not configured.
-Stop and inspect `docker logs --tail 60 portal_backend` if either check fails.
-
-Build CRM, run its owner migration, then enable delivery:
+Only continue when protocol is **2** and health succeeds. Now migrate CRM and
+enable both directions:
 
 ```bash
-cd ~/crm.ekovits.com
+cd ~/crm.ekovits.com &&
 docker compose build crm_backend crm_frontend &&
 docker compose run --rm crm_migrate &&
 sed -i 's/^PORTAL_SYNC_ENABLED=.*/PORTAL_SYNC_ENABLED=true/' .env &&
@@ -96,31 +112,39 @@ docker compose ps
 curl -fsS https://crm.ekovits.com/api/health
 ```
 
-Open CRM as Admin and select **Portal sync**. Confirm an existing converted
-customer reaches **Synced**, refresh Portal and select that customer in a quote
-or invoice draft. Check name/contact/billing details before issuing it. Converted
-customers without a billing address still appear, but need their address filled.
+Open **Portal sync** in CRM as Admin. Wait for outgoing rows to become Synced and
+the last Portal check to appear. Refresh both applications; verify an active and
+an inactive account. Change a test account's primary contact in each application,
+one change at a time, and confirm its counterpart updates. Inactive accounts will
+remain in customer lists but will not be offered in Portal's active-client selectors.
 
-This package patches Portal locally. Commit the new route, migration, helper,
-`server/server.js` and compose change in Portal's own repository after deployment;
-never commit `.env` or the backups. Preserve this patch on future Portal releases.
+Commit the patched route and new migration in Portal's own repository separately.
+Do not commit credentials or backups. Preserve the integration patch on subsequent
+Portal deployments; do not overwrite it with the unpatched old backup.
 
-## Existing Portal customer conflicts
+## Fresh installation
 
-Identify the intended existing Portal account in its Customers screen and verify
-its name/GSTIN/email. Obtain its ID from its API record; CRM ID is shown in
-**Portal sync**. Link only the intended pair:
+`install.py` still supports the originally reviewed Portal version. It installs
+both migrations and the current route, creates matching keys, and leaves sync
+disabled. Take backups first, run it with the actual Portal folder path, then use
+the Portal rebuild/check and CRM migration/enable stages above. Do not run the
+fresh installer over an existing integration; use `upgrade.py` for v1 instead.
+
+## Resolve flagged identities
+
+Verify the intended pair using the customer names, email and GSTIN. Find the CRM
+UUID in the sync screen and the Portal ID in its import-conflict row/API record.
+Then link that exact pair using the existing helper:
 
 ```bash
 docker exec portal_backend node scripts/link-crm-customer.js CRM_CUSTOMER_UUID PORTAL_CUSTOMER_ID
 ```
 
-The helper refuses a missing or already-linked Portal account. Click **Retry
-pending** in CRM. Subsequent CRM updates will apply to that Portal account.
+The helper refuses an already-linked Portal customer. The next scan uses this
+mapping and resolves data using the latest edit time. An incorrect or conflicting
+existing link needs review, not a forced overwrite.
 
-## Pause and rollback
-
-To pause delivery without losing queued work:
+## Pause or recover
 
 ```bash
 cd ~/crm.ekovits.com
@@ -128,18 +152,16 @@ sed -i 's/^PORTAL_SYNC_ENABLED=.*/PORTAL_SYNC_ENABLED=false/' .env
 docker compose up -d --no-deps crm_backend
 ```
 
-The Portal schema changes are additive. Leave mapping columns and the queue in
-place if reverting application code. To restore Portal source, use the installer's
-printed protected backup to restore `server/server.js` and `docker-compose.yml`,
-then rebuild only `portal_backend`. Do not restore databases casually: reverting
-one database without reconciling mapping IDs/revisions can desynchronize accounts.
+This pauses both directions while retaining the queues and linked records. Leave
+additive schema columns in place if reverting code. Do not restore just one
+database without reconciling mappings and timestamps, as that can desynchronize
+accounts. Protocol 1 and protocol 2 workers/endpoints are not interchangeable;
+keep sync disabled until both applications have the same version.
 
-## Tests
+## Validation
 
-`node --test tests/portal-sync.test.js` creates randomly named disposable schemas
-inside the local development database. It tests conversion/rollback, auth,
-delivery failure/retry, lost acknowledgements, duplicate/stale updates, billing
-preservation, document update prevention, explicit linking, migration backfill,
-and Admin-only status/retry routes. Never point test `DATABASE_URL` at production.
-The small Portal fixtures are source/schema only from the verified backup; they
-contain no customer data or credentials.
+`node --test tests/portal-sync.test.js` uses disposable schemas in the local
+development database, with the verified Portal schema. It covers both directions,
+manual/inactive accounts, latest-edit conflicts, auth, retries, missing ACKs,
+duplicate/loop prevention, matching, ambiguous identities, preservation of
+Portal-only fields and document-update prevention. Never run it against production.

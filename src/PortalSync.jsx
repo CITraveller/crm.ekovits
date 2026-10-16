@@ -26,10 +26,7 @@ export default function PortalSync({ api }) {
       <div className="page-head">
         <div>
           <h1>Portal customer sync</h1>
-          <p>
-            Converted customer accounts are sent to Portal for quotes and
-            invoices.
-          </p>
+          <p>Customer accounts sync both ways between CRM and Portal.</p>
         </div>
         <button
           disabled={busy || !data?.enabled}
@@ -64,10 +61,33 @@ export default function PortalSync({ api }) {
             · {data.synced} synced · {data.pending} pending · {data.total} total
           </p>
           <p>
-            Only customers linked to converted leads are included. Existing
-            Portal matches require explicit linking. Complete missing billing
+            All active and inactive customer accounts are included. The most
+            recent account edit wins for shared fields. Complete missing billing
             and tax details in Portal before issuing documents.
           </p>
+          {data.health?.last_error && (
+            <div className="error" role="alert">
+              {data.health.last_error}
+            </div>
+          )}
+          <p>
+            Last Portal check:{" "}
+            {data.health?.last_pull_at
+              ? new Date(data.health.last_pull_at).toLocaleString()
+              : "Waiting for first check"}
+          </p>
+          {!!data.conflicts?.length && (
+            <div className="error">
+              <strong>Accounts requiring linking (up to 100)</strong>
+              {data.conflicts.map((c) => (
+                <p key={c.portal_id}>
+                  {c.name} · Portal ID: {c.portal_id}
+                  <br />
+                  {c.reason}
+                </p>
+              ))}
+            </div>
+          )}
           <div style={{ overflowX: "auto" }}>
             <table>
               <thead>
@@ -102,7 +122,7 @@ export default function PortalSync({ api }) {
               </tbody>
             </table>
           </div>
-          {!data.rows.length && <p>No converted customer accounts yet.</p>}
+          {!data.rows.length && <p>No customer accounts yet.</p>}
           <p>Showing up to 500 accounts, with pending accounts first.</p>
         </>
       ) : (

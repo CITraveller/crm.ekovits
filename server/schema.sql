@@ -19,54 +19,41 @@ CREATE TABLE IF NOT EXISTS settings (id integer PRIMARY KEY CHECK(id=1), data js
 INSERT INTO settings(id,data) VALUES(1,'{"company_name":"Orbit CRM","lead_stages":["New","Contacted","Converted"]}') ON CONFLICT DO NOTHING;
 
 
--- A durable latest-state outbox. Conversion and queue writes commit together.
+-- All customer accounts participate; unconverted leads remain leads only.
 CREATE TABLE IF NOT EXISTS portal_customer_sync (
  customer_id uuid PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
- revision bigint NOT NULL DEFAULT 1,
- sent_revision bigint NOT NULL DEFAULT 0,
- payload jsonb NOT NULL,
- portal_customer_id text,
- attempts integer NOT NULL DEFAULT 0,
- next_attempt_at timestamptz NOT NULL DEFAULT now(),
- last_error text,
- synced_at timestamptz,
- updated_at timestamptz NOT NULL DEFAULT now()
+ revision bigint NOT NULL DEFAULT 1, sent_revision bigint NOT NULL DEFAULT 0,
+ payload jsonb NOT NULL, portal_customer_id text, attempts integer NOT NULL DEFAULT 0,
+ next_attempt_at timestamptz NOT NULL DEFAULT now(), last_error text,
+ synced_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE portal_customer_sync ADD COLUMN IF NOT EXISTS modified_at timestamptz(3);
+UPDATE portal_customer_sync q SET modified_at=date_trunc('milliseconds',c.updated_at) FROM customers c WHERE c.id=q.customer_id AND q.modified_at IS NULL;
+ALTER TABLE portal_customer_sync ALTER COLUMN modified_at SET DEFAULT date_trunc('milliseconds',clock_timestamp());
+ALTER TABLE portal_customer_sync ALTER COLUMN modified_at SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS portal_customer_sync_remote ON portal_customer_sync(portal_customer_id) WHERE portal_customer_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS portal_customer_sync_due ON portal_customer_sync(next_attempt_at) WHERE revision>sent_revision;
+CREATE TABLE IF NOT EXISTS portal_import_conflicts(portal_id text PRIMARY KEY, name text NOT NULL, reason text NOT NULL, seen_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS portal_sync_health(id integer PRIMARY KEY CHECK(id=1), last_pull_at timestamptz, last_error text);
+INSERT INTO portal_sync_health(id) VALUES(1) ON CONFLICT DO NOTHING;
 CREATE OR REPLACE FUNCTION enqueue_portal_customer(cid uuid) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE snapshot jsonb;
 BEGIN
- -- Serialize enqueuers with customer edits, so a concurrent conversion cannot
- -- enqueue an old customer snapshot after a newer edit has committed.
  SELECT data INTO snapshot FROM customers WHERE id=cid FOR UPDATE;
  IF NOT FOUND THEN RETURN; END IF;
- INSERT INTO portal_customer_sync(customer_id,payload) VALUES(cid,snapshot)
+ INSERT INTO portal_customer_sync(customer_id,payload,modified_at) VALUES(cid,snapshot,date_trunc('milliseconds',clock_timestamp()))
  ON CONFLICT(customer_id) DO UPDATE SET payload=EXCLUDED.payload,
- revision=portal_customer_sync.revision+1, attempts=0, next_attempt_at=now(),last_error=NULL,updated_at=now();
+ modified_at=GREATEST(EXCLUDED.modified_at,portal_customer_sync.modified_at+interval '1 millisecond'),
+ revision=portal_customer_sync.revision+1,attempts=0,next_attempt_at=now(),last_error=NULL,updated_at=now();
 END $$;
 CREATE OR REPLACE FUNCTION portal_customer_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF EXISTS(SELECT 1 FROM leads WHERE customer_id=NEW.id AND data->>'stage'='Converted') THEN
-  PERFORM enqueue_portal_customer(NEW.id);
- END IF;
- RETURN NEW;
-END $$;
-CREATE OR REPLACE FUNCTION portal_lead_converted() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
- IF NEW.customer_id IS NOT NULL AND NEW.data->>'stage'='Converted' THEN
-  IF TG_OP='INSERT' THEN
-   PERFORM enqueue_portal_customer(NEW.customer_id);
-  ELSIF OLD.customer_id IS DISTINCT FROM NEW.customer_id OR OLD.data->>'stage' IS DISTINCT FROM 'Converted' THEN
-   PERFORM enqueue_portal_customer(NEW.customer_id);
-  END IF;
- END IF;
+ IF current_setting('crm.portal_inbound',true)='1' THEN RETURN NEW; END IF;
+ PERFORM enqueue_portal_customer(NEW.id);
  RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS portal_customer_changed ON customers;
-CREATE TRIGGER portal_customer_changed AFTER UPDATE OF data ON customers FOR EACH ROW EXECUTE FUNCTION portal_customer_changed();
+CREATE TRIGGER portal_customer_changed AFTER INSERT OR UPDATE OF data ON customers FOR EACH ROW EXECUTE FUNCTION portal_customer_changed();
 DROP TRIGGER IF EXISTS portal_lead_converted ON leads;
-CREATE TRIGGER portal_lead_converted AFTER INSERT OR UPDATE ON leads FOR EACH ROW EXECUTE FUNCTION portal_lead_converted();
--- Existing conversions are queued once; subsequent migrations do not resync them.
-INSERT INTO portal_customer_sync(customer_id,payload)
-SELECT c.id,c.data FROM customers c WHERE EXISTS(SELECT 1 FROM leads l WHERE l.customer_id=c.id AND l.data->>'stage'='Converted')
-ON CONFLICT DO NOTHING;
+INSERT INTO portal_customer_sync(customer_id,payload,modified_at)
+SELECT id,data,date_trunc('milliseconds',updated_at) FROM customers ON CONFLICT DO NOTHING;

@@ -42,6 +42,7 @@ def update_env(file,values):
     os.chmod(file,0o600)
 shutil.copy2(crm/'deploy/portal-integration/crmIntegration.js',route)
 shutil.copy2(crm/'deploy/portal-integration/202610120001_crm_sync.sql',migration)
+shutil.copy2(crm/'deploy/portal-integration/202610120002_customer_sync_bidirectional.sql',portal/'server/db/migrations/202610120002_customer_sync_bidirectional.sql')
 shutil.copy2(crm/'deploy/portal-integration/link-customer.js',portal/'server/scripts/link-crm-customer.js')
 entry=portal/'server/server.js'
 text=entry.read_text()

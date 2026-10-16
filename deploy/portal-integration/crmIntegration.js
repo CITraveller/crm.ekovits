@@ -1,17 +1,20 @@
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
-import { withTransaction } from "../db/connection.js";
+import { query, withTransaction } from "../db/connection.js";
 import { uid } from "../utils/ids.js";
 import { validateEmail, validateGstin } from "../utils/validation.js";
 import { audit } from "../services/auditService.js";
-
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const norm = (v) =>
+  String(v || "")
+    .trim()
+    .toLowerCase();
 export function authorizeCrm(req, res, next) {
   const key = process.env.CRM_SYNC_TOKEN || "";
   if (!/^[a-f0-9]{64}$/i.test(key))
     return res.status(503).json({ error: "Integration unavailable" });
-  const actual = Buffer.from(req.get("authorization") || "");
-  const expected = Buffer.from(`Bearer ${key}`);
+  const actual = Buffer.from(req.get("authorization") || ""),
+    expected = Buffer.from(`Bearer ${key}`);
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
     return res.status(401).json({ error: "Unauthorized" });
   next();
@@ -25,6 +28,19 @@ export function validatePayload(body) {
     !/^[1-9][0-9]{0,14}$/.test(String(body.revision))
   )
     throw fail(422, "Invalid customer identity");
+  const modified = new Date(body.modifiedAt);
+  if (
+    typeof body.modifiedAt !== "string" ||
+    !Number.isFinite(modified.getTime()) ||
+    modified.getTime() > Date.now() + 60000
+  )
+    throw fail(422, "Invalid modification time");
+  if (
+    body.portalCustomerId !== undefined &&
+    (typeof body.portalCustomerId !== "string" ||
+      body.portalCustomerId.length > 200)
+  )
+    throw fail(422, "Invalid Portal identity");
   const c = body.customer;
   if (!c || typeof c !== "object" || Array.isArray(c))
     throw fail(422, "Invalid customer");
@@ -42,13 +58,41 @@ export function validatePayload(body) {
   )
     throw fail(422, "Invalid customer details");
   return {
-    customerId: body.customerId,
+    ...body,
     revision: String(body.revision),
-    customer: c,
+    modifiedAt: modified.toISOString(),
+  };
+}
+export function confidentMatch(row, c) {
+  const gst = norm(c.gstin),
+    email = norm(c.contact_email || c.email);
+  if (gst && norm(row.gstin) && gst !== norm(row.gstin)) return false;
+  return Boolean(
+    (gst && gst === norm(row.gstin)) ||
+    (email && email === norm(row.email) && norm(row.name) === norm(c.name)),
+  );
+}
+export async function listSyncCustomers(after = "", runner = { query }) {
+  if (typeof after !== "string" || after.length > 200)
+    throw fail(422, "Invalid cursor");
+  const { rows } = await runner.query(
+    "SELECT * FROM customers WHERE id>$1 ORDER BY id LIMIT 100",
+    [after],
+  );
+  return {
+    protocol: 2,
+    rows,
+    next: rows.length === 100 ? rows.at(-1).id : null,
   };
 }
 export async function receiveCustomer(body, transact = withTransaction) {
-  const { customerId, revision, customer: c } = validatePayload(body);
+  const {
+    customerId,
+    revision,
+    customer: c,
+    modifiedAt,
+    portalCustomerId,
+  } = validatePayload(body);
   return transact(async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(72819411)");
     let old = (
@@ -57,77 +101,111 @@ export async function receiveCustomer(body, transact = withTransaction) {
         [customerId],
       )
     ).rows[0];
-    if (old && BigInt(old.crm_revision) >= BigInt(revision))
-      return { customerId, revision, portalCustomerId: old.id };
-    const email = c.contact_email || c.email || "";
-    const gstin = (c.gstin || "").toUpperCase();
+    if (portalCustomerId && old && old.id !== portalCustomerId)
+      throw fail(409, "Customer identity conflict");
+    if (!old && portalCustomerId) {
+      old = (
+        await client.query("SELECT * FROM customers WHERE id=$1 FOR UPDATE", [
+          portalCustomerId,
+        ])
+      ).rows[0];
+      if (!old || (old.crm_customer_id && old.crm_customer_id !== customerId))
+        throw fail(409, "Customer identity conflict");
+    }
+    const email = c.contact_email || c.email || "",
+      gstin = (c.gstin || "").toUpperCase();
     if (!old) {
-      const matches = await client.query(
-        `SELECT id FROM customers WHERE
-        lower(trim(name))=lower(trim($1)) OR ($2<>'' AND lower(email)=lower($2)) OR ($3<>'' AND upper(gstin)=$3)`,
-        [c.name, email, gstin],
-      );
-      if (matches.rows.length)
-        throw fail(409, "Existing customer needs explicit linking");
+      const matches = (
+        await client.query(
+          `SELECT * FROM customers WHERE lower(trim(name))=lower(trim($1)) OR ($2<>'' AND lower(trim(email))=lower(trim($2))) OR ($3<>'' AND upper(trim(gstin))=$3) FOR UPDATE`,
+          [c.name, email, gstin],
+        )
+      ).rows;
+      if (matches.length) {
+        if (
+          matches.length !== 1 ||
+          matches[0].crm_customer_id ||
+          !confidentMatch(matches[0], c)
+        )
+          throw fail(409, "Existing customer needs explicit linking");
+        old = matches[0];
+      }
     }
     const id = old?.id || uid("cust");
-    const values = [
-      id,
-      c.name,
-      c.address || "",
-      c.contact_name || "",
-      c.contact_phone || c.phone || "",
-      email,
-      gstin,
-      c.designation || "",
-      c.alternate_phone || "",
-      c.notes || "",
-      c.status !== "Inactive",
-      customerId,
-      revision,
-    ];
-    if (!old) {
-      // Blank billing/state details are deliberately not invented. Portal staff
-      // complete them before issuing documents. These are ordinary customers.
-      await client.query(
-        `INSERT INTO customers(id,name,billing_address,contact_person,contact_number,email,gstin,designation,alternate_phone,notes,active,crm_customer_id,crm_revision,state,state_code,customer_type)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'','','Sales Customer Account')`,
-        values,
+    await client.query("SELECT set_config('crm.sync_inbound','1',true)");
+    if (!old || new Date(modifiedAt) > new Date(old.sync_modified_at)) {
+      const values = [
+        id,
+        c.name,
+        c.address || "",
+        c.contact_name || "",
+        c.contact_phone || c.phone || "",
+        email,
+        gstin,
+        c.designation || "",
+        c.alternate_phone || "",
+        c.notes || "",
+        c.status !== "Inactive",
+        customerId,
+        revision,
+        modifiedAt,
+      ];
+      if (!old)
+        await client.query(
+          `INSERT INTO customers(id,name,billing_address,contact_person,contact_number,email,gstin,designation,alternate_phone,notes,active,crm_customer_id,crm_revision,sync_modified_at,state,state_code,customer_type)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'','','Sales Customer Account')`,
+          values,
+        );
+      else
+        await client.query(
+          `UPDATE customers SET name=$2,billing_address=$3,contact_person=$4,contact_number=$5,email=$6,gstin=$7,designation=$8,alternate_phone=$9,notes=$10,active=$11,crm_customer_id=$12,crm_revision=$13,sync_modified_at=$14,updated_at=now() WHERE id=$1`,
+          values,
+        );
+      await audit(
+        "Customer Synced from CRM",
+        "customer",
+        id,
+        c.name,
+        old || null,
+        c,
+        "Latest account edit wins; documents unchanged",
+        client,
       );
-    } else {
-      // Preserve Portal-only billing fields and empty CRM fields. Do not call
-      // updateCustomer: it rewrites historical invoice/quotation snapshots.
+    } else if (!old.crm_customer_id) {
       await client.query(
-        `UPDATE customers SET name=$2,billing_address=COALESCE(NULLIF($3,''),billing_address),
-        contact_person=COALESCE(NULLIF($4,''),contact_person),contact_number=COALESCE(NULLIF($5,''),contact_number),
-        email=COALESCE(NULLIF($6,''),email),gstin=COALESCE(NULLIF($7,''),gstin),designation=COALESCE(NULLIF($8,''),designation),
-        alternate_phone=COALESCE(NULLIF($9,''),alternate_phone),notes=COALESCE(NULLIF($10,''),notes),active=$11,
-        crm_customer_id=$12,crm_revision=$13,updated_at=now() WHERE id=$1`,
-        values,
+        "UPDATE customers SET crm_customer_id=$1 WHERE id=$2",
+        [customerId, id],
+      );
+      await audit(
+        "CRM Customer Linked",
+        "customer",
+        id,
+        old.name,
+        null,
+        { crmCustomerId: customerId },
+        "Existing account linked",
+        client,
       );
     }
-    const current = (
+    const record = (
       await client.query("SELECT * FROM customers WHERE id=$1", [id])
     ).rows[0];
-    await audit(
-      "CRM Customer Synced",
-      "customer",
-      id,
-      c.name,
-      old || null,
-      current,
-      "Converted CRM customer API",
-      client,
-    );
-    return { customerId, revision, portalCustomerId: id };
+    return { protocol: 2, customerId, revision, portalCustomerId: id, record };
   });
 }
 export const crmIntegrationRouter = express.Router();
 crmIntegrationRouter.use(authorizeCrm);
+crmIntegrationRouter.get("/customers", async (req, res, next) => {
+  try {
+    res.json(await listSyncCustomers(req.query.after || ""));
+  } catch (e) {
+    next(e);
+  }
+});
 crmIntegrationRouter.post("/customers", async (req, res, next) => {
   try {
     res.json(await receiveCustomer(req.body));
-  } catch (error) {
-    next(error);
+  } catch (e) {
+    next(e);
   }
 });
