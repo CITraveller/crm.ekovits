@@ -1,3 +1,4 @@
+import BulkStage from "./BulkStage.jsx";
 import DeleteRecord from "./DeleteRecord.jsx";
 import PortalSync from "./PortalSync.jsx";
 import React, { useState, useEffect, useRef } from "react";
@@ -1096,6 +1097,7 @@ function Records({
         <div className="selection-bar">
           {selected.length} records selected{" "}
           <button onClick={() => setSelected([])}>Clear selection</button>
+          {entity === "leads" && writable && !busy && <BulkStage rows={rows.filter(r => selected.includes(r.id))} stages={states} api={api} Dialog={Dialog} onDone={({updated, unchanged}) => { setSelected([]); setLocalRev(v => v + 1); notify(`${updated} lead(s) updated${unchanged ? `; ${unchanged} already in that stage` : ""}`); }} />}
         </div>
       )}
       {busy ? (

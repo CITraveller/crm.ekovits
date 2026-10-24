@@ -1,3 +1,4 @@
+import { registerBulkStage } from "./bulk-stage.js";
 import { registerDeletion } from "./delete-record.js";
 import { registerPortalSyncRoutes } from "./portal-sync.js";
 import { spawnSync } from "node:child_process";
@@ -139,6 +140,7 @@ const admin = (req, res, next) =>
     : next(fail(403, "Administrator access required"));
 registerPortalSyncRoutes(app, admin);
 registerDeletion(app, admin);
+registerBulkStage(app, { checkStage, convert, event });
 app.get("/api/users", async (req, res) =>
   res.json(
     (
