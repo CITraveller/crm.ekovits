@@ -57,3 +57,10 @@ CREATE TRIGGER portal_customer_changed AFTER INSERT OR UPDATE OF data ON custome
 DROP TRIGGER IF EXISTS portal_lead_converted ON leads;
 INSERT INTO portal_customer_sync(customer_id,payload,modified_at)
 SELECT id,data,date_trunc('milliseconds',updated_at) FROM customers ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS deleted_crm_records (
+ entity text NOT NULL CHECK(entity IN ('leads','customers')),record_id uuid NOT NULL,
+ snapshot jsonb NOT NULL,portal_customer_id text,deleted_by uuid NOT NULL,
+ deleted_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(entity,record_id)
+);
+CREATE INDEX IF NOT EXISTS deleted_crm_records_portal ON deleted_crm_records(portal_customer_id) WHERE entity='customers';

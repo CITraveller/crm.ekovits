@@ -1,3 +1,4 @@
+import DeleteRecord from "./DeleteRecord.jsx";
 import PortalSync from "./PortalSync.jsx";
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
@@ -439,6 +440,7 @@ function App() {
       )}
       {modal?.type === "detail" && (
         <Detail
+          canDelete={user.role === "Admin"}
           key={modal.entity + modal.id}
           entity={modal.entity}
           id={modal.id}
@@ -1599,6 +1601,7 @@ function RecordForm({ entity, record, users, stages, onClose, onSave }) {
   );
 }
 function Detail({
+  canDelete,
   entity,
   id,
   users,
@@ -1681,6 +1684,7 @@ function Detail({
                 <button onClick={() => onEdit(record)}>Edit record</button>
               )}
             </div>
+            {canDelete && ["customers", "leads"].includes(entity) && <DeleteRecord entity={entity} record={record} api={api} onDeleted={() => { refresh(); notify("Record deleted from CRM"); onClose(); }} />}
             <div className="detail-grid">
               <div>
                 <h3>Details</h3>

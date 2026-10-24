@@ -1484,3 +1484,7 @@ dialog.expanded {
 @media (max-width: 1250px) { .ek-login-layout { grid-template-columns: minmax(360px, 460px) 1fr; gap: 55px; }.ek-company h2 { font-size: 24px; letter-spacing: 2px; white-space: normal; }.ek-company-description { font-size: 20px; }.ek-contact { gap: 14px; flex-wrap: wrap; }.ek-features { gap: 14px; }.ek-values { letter-spacing: 2px; } }
 @media (max-width: 950px) { .ek-login { padding: 36px 22px; }.ek-login-layout { grid-template-columns: minmax(0, 500px); justify-content: center; gap: 50px; }.ek-company { text-align: center; padding: 0 0 28px; }.ek-contact { justify-content: center; }.ek-tagline { margin-top: 38px; } }
 @media (max-width: 480px) { .ek-login { padding: 22px 16px; }.ek-login-card { padding: 28px 22px; }.ek-login-logo { width: 235px; max-width: 100%; margin-bottom: 16px; }.ek-login-card h1 { font-size: 28px; }.ek-login-subtitle { font-size: 16px; }.ek-features { grid-template-columns: repeat(2, 1fr); gap: 26px; }.ek-contact { flex-direction: column; gap: 16px; }.ek-contact > span { display: none; }.ek-company h2 { font-size: 21px; }.ek-values { font-size: 10px; letter-spacing: 2px; gap: 8px; }.ek-company-description { margin-top: 8px; font-size: 18px; }.ek-desktop-break { display: none; } }
+
+.delete-record-button { color: #a21c2b; border-color: #e5a8b0; }
+.delete-record-confirm { border: 1px solid #e5a8b0; background: #fff7f7; border-radius: 8px; padding: 18px; margin: 16px 0; }
+.delete-record-confirm label { display: grid; gap: 8px; margin-bottom: 14px; }

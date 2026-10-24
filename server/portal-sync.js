@@ -170,6 +170,11 @@ export async function importPortalCustomer(row) {
   validRecord(row);
   return transaction(async (client) => {
     await client.query("SELECT pg_advisory_xact_lock(72819412)");
+    const excluded = await client.query("SELECT 1 FROM deleted_crm_records WHERE entity='customers' AND (record_id=$1 OR portal_customer_id=$2) LIMIT 1", [row.crm_customer_id || null, row.id]);
+    if (excluded.rowCount) {
+      await client.query("DELETE FROM portal_import_conflicts WHERE portal_id=$1", [row.id]);
+      return;
+    }
     let local = (
       await client.query(
         `SELECT c.* FROM customers c LEFT JOIN portal_customer_sync q ON q.customer_id=c.id WHERE c.id=$1 OR q.portal_customer_id=$2 FOR UPDATE OF c`,

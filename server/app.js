@@ -1,3 +1,4 @@
+import { registerDeletion } from "./delete-record.js";
 import { registerPortalSyncRoutes } from "./portal-sync.js";
 import { spawnSync } from "node:child_process";
 import express from "express";
@@ -137,6 +138,7 @@ const admin = (req, res, next) =>
     ? next()
     : next(fail(403, "Administrator access required"));
 registerPortalSyncRoutes(app, admin);
+registerDeletion(app, admin);
 app.get("/api/users", async (req, res) =>
   res.json(
     (
@@ -633,6 +635,7 @@ app.put("/api/:entity/:id", async (req, res) => {
   const p = envelope.parse(req.body);
   const data = schemas[entity].parse(p.data);
   const r = await transaction(async (c) => {
+    if (["leads", "customers"].includes(entity)) await c.query("SELECT pg_advisory_xact_lock(927532)");
     const { rows } = await c.query(
       `SELECT * FROM ${entity} WHERE id=$1 FOR UPDATE`,
       [id],
